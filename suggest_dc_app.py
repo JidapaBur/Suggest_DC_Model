@@ -9,7 +9,7 @@ from geopy.distance import great_circle
 st.set_page_config(layout="wide")
 st.title("📦 Customer & Hub Visualization Tool")
 # Footer note
-st.markdown("<div style='text-align:right; font-size:12px; color:gray;'>Developed by Jidapa Buranachan</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:right; font-size:12px; color:gray;'>Version 1.0.1 Developed by Jidapa Buranachan</div>", unsafe_allow_html=True)
 
 # Downloadable template section
 st.markdown("### 📥 Download Template Files")
