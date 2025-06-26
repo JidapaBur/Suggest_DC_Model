@@ -7,7 +7,7 @@ from sklearn.cluster import KMeans
 from geopy.distance import great_circle
 
 st.set_page_config(layout="wide")
-st.title("📦 Customer & DC Visualization Tool")
+st.title("📦 Customer & Hub Visualization Tool")
 
 # Upload files
 cust_file = st.file_uploader("Upload Customer File (.csv with Lat, Long, Customer_Code)", type="csv")
