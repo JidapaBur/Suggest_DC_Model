@@ -1,0 +1,6 @@
+streamlit
+streamlit-folium
+folium
+pandas
+scikit-learn
+geopy
