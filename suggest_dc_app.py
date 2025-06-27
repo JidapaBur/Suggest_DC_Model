@@ -128,7 +128,7 @@ if dc_file:
         
 # Suggest New Hubs for Out-of-Radius Customers
 st.subheader("Suggest New Hubs Based on Radius & Existing Hubs")
-radius_threshold_km = st.slider("Set Radius Threshold from Existing Hubs (km):", 30, 500, 100)
+radius_threshold_km = st.slider("Set Radius Threshold from Existing Hubs (km):", 1, 500, 100)
 
 # ------------------------------------------------------------------------------------------------------------------------
 
@@ -184,7 +184,7 @@ st.markdown(
 )
 
 if not cluster_data.empty:
-    n_new_hubs = st.slider("How many new hubs to suggest from all customers?", 1, 10, 3)
+    n_new_hubs = st.slider("How many new hubs to suggest from all customers?", 1, 30, 3)
     new_hub_locations = kmeans_within_thailand(cluster_data, n_new_hubs, thailand_union)
 
     st.subheader("New Hub Suggestions Map")
