@@ -1,172 +1,294 @@
 import streamlit as st
 import pandas as pd
 import folium
+from folium import FeatureGroup, LayerControl
 from folium.plugins import HeatMap, MarkerCluster
 from streamlit_folium import st_folium
 from sklearn.cluster import KMeans
-from geopy.distance import great_circle
+from geopy.distance import great_circle, geodesic
+import numpy as np
+
+from sklearn.neighbors import BallTree
+from scipy.spatial.distance import cdist
+from math import radians
+
+import geopandas as gpd
+from shapely.geometry import Point
+
+#------------------------------------------------------------------------------------------------------------------------
 
 st.set_page_config(layout="wide")
-st.title("📦 Customer & Hub Visualization Tool")
+st.title("Customer & Hub Visualization Tool")
 # Footer note
-st.markdown("<div style='text-align:right; font-size:12px; color:gray;'>Version 1.0.1 Developed by Jidapa Buranachan</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:right; font-size:12px; color:gray;'>Version 1.0.5 Developed by Jidapa Buranachan</div>", unsafe_allow_html=True)
 
-# Downloadable template section
-st.markdown("### 📥 Download Template Files")
+#------------------------------------------------------------------------------------------------------------------------
+
+
+# Downloadable templates
+st.markdown("### Download Template Files")
 cust_template = pd.DataFrame(columns=["Customer_Code", "Lat", "Long", "Type", "Province"])
+store_template = pd.DataFrame(columns=["Store_Code", "Lat", "Long", "Type", "Province"])
 dc_template = pd.DataFrame(columns=["Hub_Name", "Lat", "Long", "Type", "Province"])
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
-    st.download_button(
-        label="⬇️ Download Customer Template",
-        data=cust_template.to_csv(index=False).encode('utf-8-sig'),
-        file_name='Customer_Template.csv',
-        mime='text/csv'
-    )
+    st.download_button("⬇️ Download Customer Template", cust_template.to_csv(index=False).encode('utf-8-sig'), "Customer_Template.csv", "text/csv")
 with col2:
-    st.download_button(
-        label="⬇️ Download Hub Template",
-        data=dc_template.to_csv(index=False).encode('utf-8-sig'),
-        file_name='Hub_Template.csv',
-        mime='text/csv'
-    )
+    st.download_button("⬇️ Download Store Template", store_template.to_csv(index=False).encode('utf-8-sig'), "Store_Template.csv", "text/csv")
+with col3:
+    st.download_button("⬇️ Download Hub Template", dc_template.to_csv(index=False).encode('utf-8-sig'), "Hub_Template.csv", "text/csv")
 
-# Upload files
-cust_file = st.file_uploader("Upload Customer File (.csv with Lat, Long, Customer_Code, Type, Province)", type="csv")
-dc_file = st.file_uploader("Upload Hub File (.csv with Lat, Long, Hub_Name, Type, Province)", type="csv")
+# Upload input files
+cust_file = st.file_uploader("📤 Upload Customer File", type="csv")
+store_file = st.file_uploader("📤 Upload Store File", type="csv")
+dc_file = st.file_uploader("📤 Upload Hub File", type="csv")
 
+# Load customer & store data
+cust_data = store_data = None
 if cust_file:
     try:
-        cust_data = pd.read_csv(cust_file)
-        if cust_data.empty:
-            st.error("🚫 Customer CSV file is empty. Please upload a file with data.")
-            st.stop()
-        cust_data = cust_data.dropna(subset=['Lat', 'Long'])
-    except pd.errors.EmptyDataError:
-        st.error("🚫 Customer CSV file is empty or corrupted.")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Failed to load customer file: {e}")
-        st.stop()
+        cust_data = pd.read_csv(cust_file).dropna(subset=['Lat', 'Long'])
+    except: st.stop()
+if store_file:
+    try:
+        store_data = pd.read_csv(store_file).dropna(subset=['Lat', 'Long'])
+    except: st.stop()
 
-    locations = cust_data[['Lat', 'Long']]
+# Load maps
+thailand = gpd.read_file("thailand.geojson")
+thailand_union = thailand.unary_union
+provinces_gdf = gpd.read_file("provinces.geojson")
 
-    # Filter by Type
-    customer_types = cust_data['Type'].dropna().unique().tolist()
-    selected_types = st.multiselect("Filter Customer Types:", options=customer_types, default=customer_types)
-    cust_data = cust_data[cust_data['Type'].isin(selected_types)]
+# Filter inside Thailand
+sources = []
+if cust_data is not None:
+    cust_data['geometry'] = cust_data.apply(lambda r: Point(r['Long'], r['Lat']), axis=1)
+    gdf = gpd.GeoDataFrame(cust_data, geometry='geometry', crs="EPSG:4326")
+    cust_data = gdf[gdf.geometry.within(thailand_union)].drop(columns='geometry')
+    cust_data['Source'] = "Customer"
+    cust_data = cust_data.rename(columns={"Customer_Code": "Code"})
+    sources.append(cust_data)
+if store_data is not None:
+    store_data['geometry'] = store_data.apply(lambda r: Point(r['Long'], r['Lat']), axis=1)
+    gdf = gpd.GeoDataFrame(store_data, geometry='geometry', crs="EPSG:4326")
+    store_data = gdf[gdf.geometry.within(thailand_union)].drop(columns='geometry')
+    store_data['Source'] = "Store"
+    store_data = store_data.rename(columns={"Store_Code": "Code"})
+    sources.append(store_data)
 
-    st.subheader("📍 Nearest Hub for Each Customer")
+if not sources:
+    st.warning("⚠️ Please upload at least one file: Customer or Store.")
+    st.stop()
 
-    if dc_file:
-        dc_data = pd.read_csv(dc_file).dropna(subset=['Lat', 'Long'])
+combined_data = pd.concat(sources, ignore_index=True)
+all_types = combined_data['Type'].dropna().unique().tolist()
+selected_types = st.multiselect("Filter Location Types:", options=all_types, default=all_types)
+combined_data = combined_data[combined_data['Type'].isin(selected_types)]
 
-        # Filter Hub types
-        dc_types = dc_data['Type'].dropna().unique().tolist()
-        selected_dc_types = st.multiselect("Filter Hub Types:", options=dc_types, default=dc_types)
-        dc_data = dc_data[dc_data['Type'].isin(selected_dc_types)]
+# Nearest hub calculation
+st.subheader("📍 Nearest Hub for Each Customer / Store")
+if dc_file:
+    dc_data = pd.read_csv(dc_file).dropna(subset=['Lat', 'Long'])
+    dc_types = dc_data['Type'].dropna().unique().tolist()
+    selected_dc_types = st.multiselect("Filter Hub Types:", options=dc_types, default=dc_types)
+    dc_data = dc_data[dc_data['Type'].isin(selected_dc_types)]
+    if 'Hub_Name' not in dc_data.columns:
+        st.error("❌ 'Hub_Name' column is missing in hub data."); st.stop()
 
-        # Find nearest hub for each customer
-        def find_nearest_dc(cust_lat, cust_lon, dc_df):
-            distances = dc_df.apply(
-                lambda row: great_circle((cust_lat, cust_lon), (row['Lat'], row['Long'])).km,
-                axis=1
-            )
-            idx = distances.idxmin()
-            return dc_df.loc[idx, 'Hub_Name'], distances.min()
+    # Fill missing province
+    combined_data['Province'] = combined_data['Province'].fillna("Unknown")
+    unknown = combined_data[combined_data['Province'].str.lower().isin(["", "unknown"])]
+    if not unknown.empty:
+        unknown['geometry'] = unknown.apply(lambda r: Point(r['Long'], r['Lat']), axis=1)
+        gdf = gpd.GeoDataFrame(unknown, geometry='geometry', crs="EPSG:4326")
+        joined = gpd.sjoin(gdf, provinces_gdf, how="left", predicate="within")
+        joined['Province'] = joined['pro_en']
+        known = combined_data[~combined_data.index.isin(unknown.index)]
+        combined_data = pd.concat([known, joined[known.columns]], ignore_index=True)
 
-        results = []
-        for _, row in cust_data.iterrows():
-            nearest_dc, min_dist = find_nearest_dc(row['Lat'], row['Long'], dc_data)
-            results.append({
-                'Customer_Code': row['Customer_Code'],
-                'Type': row.get('Type', 'Unknown'),
-                'Province': row.get('Province', 'N/A'),
-                'Nearest_Hub': nearest_dc,
-                'Distance_km': round(min_dist, 2)
-            })
+    # Distance calculation
+    combined_data[['Lat', 'Long']] = combined_data[['Lat', 'Long']].apply(pd.to_numeric, errors='coerce')
+    combined_data = combined_data.dropna(subset=['Lat', 'Long'])
 
-        nearest_df = pd.DataFrame(results)
-        st.dataframe(nearest_df)
+    cust_coords = np.radians(combined_data[['Lat', 'Long']])
+    dc_coords = np.radians(dc_data[['Lat', 'Long']])
+    hub_tree = BallTree(dc_coords, metric='haversine')
+    distances, indices = hub_tree.query(cust_coords, k=1)
+    distances_km = distances.flatten() * 6371
 
-    # Suggested hub clustering
-    st.subheader("🌐 Suggested Hub Locations (via KMeans Clustering)")
-    n_dc = st.slider("Select number of suggested hubs:", 1, 10, 5)
-    radius_km = st.slider("Radius per hub (km):", 10, 300, 100)
-    radius_m = radius_km * 1000
+    combined_data['Nearest_Hub'] = dc_data.iloc[indices.flatten()]['Hub_Name'].values
+    combined_data['Distance_km'] = np.round(distances_km, 2)
 
-    # Filter customers by radius around cluster centers
-    kmeans = KMeans(n_clusters=n_dc, random_state=42)
-    kmeans.fit(cust_data[['Lat', 'Long']])
-    dc_locations = kmeans.cluster_centers_
+    st.dataframe(combined_data[['Code', 'Type', 'Province', 'Source', 'Nearest_Hub', 'Distance_km']])
+    st.download_button("⬇️ Download Nearest Hub Results", combined_data.to_csv(index=False).encode('utf-8-sig'), "nearest_hub_results.csv", "text/csv")
 
-    # Create folium map
-    m = folium.Map(location=[13.75, 100.5], zoom_start=6)
+        
+    #------------------------------------------------------------------------------------------------------------------------
+        
+# Suggest New Hubs for Out-of-Radius Customers
+st.subheader("Suggest New Hubs Based on Radius & Existing Hubs")
+radius_threshold_km = st.slider("Set Radius Threshold from Existing Hubs (km):", 10, 500, 100)
 
-    # Plot customer heatmap
-    heat_data = cust_data[['Lat', 'Long']].values.tolist()
-    HeatMap(heat_data, radius=10).add_to(m)
+# ------------------------------------------------------------------------------------------------------------------------
 
-    # Province-based Circle Visualization
-    province_counts = cust_data['Province'].value_counts()
-    for province, count in province_counts.items():
-        subset = cust_data[cust_data['Province'] == province]
-        if not subset.empty:
-            lat, lon = subset[['Lat', 'Long']].mean()
+def kmeans_within_thailand(data, n_clusters, thailand_polygon, max_retry=10):
+    # ✅ แนะนำ: simplify polygon เพื่อให้ within() เร็วขึ้น (ค่า 0.01 = ประมาณ 1 กม.)
+    simplified_polygon = thailand_polygon.simplify(0.01)
+
+    for i in range(max_retry):
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42 + i)
+        kmeans.fit(data[['Lat', 'Long']])
+        centers = kmeans.cluster_centers_
+
+        # ✅ แปลงศูนย์กลางเป็นจุด
+        centers_geometry = gpd.GeoSeries(
+            [Point(lon, lat) for lat, lon in centers],
+            crs="EPSG:4326"
+        )
+
+        # ✅ คัดเฉพาะศูนย์กลางที่อยู่ในประเทศไทย
+        valid_centers = [
+            (lat, lon) for (lat, lon), point in zip(centers, centers_geometry)
+            if point.within(simplified_polygon)
+        ]
+
+        if valid_centers:
+            return valid_centers
+
+    # ❗ fallback ถ้าไม่มี center ไหนเลยอยู่ในไทย
+    return [(lat, lon) for lat, lon in centers]
+
+
+# ------------------------ Main Block ------------------------
+
+# -------------------- สร้าง BallTree และคำนวณระยะใกล้ที่สุด --------------------
+hub_tree = BallTree(dc_coords, metric='haversine')
+distances, _ = hub_tree.query(cust_coords, k=1)
+distances_km = distances.flatten() * 6371  # คูณรัศมีโลก
+
+# -------------------- ตัดสินว่าอยู่นอกระยะ hub เดิมหรือไม่ --------------------
+combined_data['Outside_Hub'] = distances_km > radius_threshold_km
+
+# -------------------- แปลงเป็น GeoDataFrame เพื่อตรวจสอบว่าอยู่ในประเทศไทย --------------------
+combined_data['geometry'] = combined_data.apply(lambda row: Point(row['Long'], row['Lat']), axis=1)
+combined_gdf = gpd.GeoDataFrame(combined_data, geometry='geometry', crs="EPSG:4326")
+combined_gdf = combined_gdf[combined_gdf.geometry.within(thailand_union)]
+
+# ✅ ลูกค้าที่อยู่ในประเทศไทยทั้งหมด
+cluster_data = combined_gdf.copy()
+
+st.markdown(
+    f"<b>{len(cluster_data)} customers</b> will be used for new hub suggestions (in and out of coverage, inside Thailand).",
+    unsafe_allow_html=True
+)
+
+if not cluster_data.empty:
+    n_new_hubs = st.slider("How many new hubs to suggest from all customers?", 1, 10, 3)
+    new_hub_locations = kmeans_within_thailand(cluster_data, n_new_hubs, thailand_union)
+
+    st.subheader("New Hub Suggestions Map")
+    m_new = folium.Map(location=[13.75, 100.5], zoom_start=6, control_scale=True)
+
+    # ------------------------------------------------------------------------------------------------------------------------
+
+    # Layer visibility controls
+    with st.expander("🧭 Layer Visibility Controls"):
+        show_heatmap = st.checkbox("Show Heatmap", value=True)
+        show_customer_markers = st.checkbox("Show Customer Markers", value=True)
+        show_existing_hubs = st.checkbox("Show Existing Hubs", value=True)
+        show_suggested_hubs = st.checkbox("Show Suggested Hubs", value=True)
+        show_hub_radius_layer = st.checkbox("Show Existing Hub Radius Zones", value=True)
+
+    #------------------------------------------------------------------------------------------------------------------------
+    
+        # Existing hub layer
+        existing_layer = FeatureGroup(name="Existing Hubs")
+        for _, row in dc_data.iterrows():
+            folium.Marker(
+                location=[row['Lat'], row['Long']],
+                popup=row['Hub_Name'],
+                icon=folium.Icon(color = 'red' if row.get('Type', '').lower() == 'makro' else 'blue', icon='store', prefix='fa')
+            ).add_to(existing_layer)
+        if show_existing_hubs:
+            existing_layer.add_to(m_new)
+
+        # Existing hub radius circles
+        if show_hub_radius_layer:
+            radius_layer = FeatureGroup(name="Existing Hub Radius")
+            for _, row in dc_data.iterrows():
+                folium.Circle(
+                    location=[row['Lat'], row['Long']],
+                    radius=radius_threshold_km * 1000,
+                    color='gray',
+                    fill=False,
+                    dash_array="5"
+                ).add_to(radius_layer)
+            radius_layer.add_to(m_new)
+
+        # Outside customer layer with brand-based color
+        cust_gdf = combined_gdf[combined_gdf['Source'] == 'Customer'].copy()
+        outside_customers = cust_gdf[cust_gdf['Outside_Hub'] == True]
+        outside_layer = FeatureGroup(name="Outside Customers")
+        for _, row in outside_customers.iterrows():
+            color = 'red' if row.get('Type', '').lower() == 'makro' else 'blue'
             folium.CircleMarker(
-                location=[lat, lon],
-                radius=10 + count**0.5,
-                color='blue',
+                location=[row['Lat'], row['Long']],
+                radius=5,
+                color=color,
                 fill=True,
                 fill_opacity=0.5,
-                popup=f"{province}: {count} customers"
-            ).add_to(m)
+                popup=row['Code']
+            ).add_to(outside_layer)
+        if show_customer_markers:
+            outside_layer.add_to(m_new)
 
-    # Clustered customer markers by Type
-    customer_cluster = MarkerCluster(name="Customers")
-    for _, row in cust_data.iterrows():
-        type_lower = row.get('Type', '').lower()
-        icon = 'home'
-        color = 'lightblue' if type_lower == 'lotus' else 'red'
-        popup_text = f"Customer: {row['Customer_Code']} ({row.get('Type', 'Unknown')})<br>Province: {row.get('Province', 'N/A')}"
-        folium.Marker(
-            [row['Lat'], row['Long']],
-            popup=popup_text,
-            icon=folium.Icon(color=color, icon=icon, prefix='fa')
-        ).add_to(customer_cluster)
-    m.add_child(customer_cluster)
-
-    # Existing hubs by Type
-    if dc_file:
-        for _, row in dc_data.iterrows():
-            type_lower = row.get('Type', '').lower()
-            icon = 'store'
-            color = 'lightblue' if type_lower == 'lotus' else 'red'
-            popup_text = f"Hub: {row['Hub_Name']} ({row.get('Type', 'Unknown')})<br>Province: {row.get('Province', 'N/A')}"
+        # Suggested hub layer
+        suggest_layer = FeatureGroup(name="Suggested New Hubs")
+        
+        for i, (lat, lon) in enumerate(new_hub_locations):
+            point = Point(lon, lat)
+        
+            # หา province name
+            province_name = "Unknown"
+            for _, prov in provinces_gdf.iterrows():
+                if point.within(prov['geometry']):
+                    province_name = prov.get("pro_en", "Unknown")
+                    break
+        
+            # แสดง marker + popup จังหวัด
             folium.Marker(
-                [row['Lat'], row['Long']],
-                popup=popup_text,
-                icon=folium.Icon(color=color, icon=icon, prefix='fa')
-            ).add_to(m)
+                location=[lat, lon],
+                popup=f"Suggest New Hub #{i+1}<br>Province: {province_name}",
+                icon=folium.Icon(color='darkgreen', icon='star', prefix='fa')
+            ).add_to(suggest_layer)
+        
+            # วงรัศมี
+            folium.Circle(
+                location=[lat, lon],
+                radius=radius_threshold_km * 1000,
+                color='darkgreen',
+                fill=True,
+                fill_opacity=0.1,
+                popup=f"Radius {radius_threshold_km} km"
+            ).add_to(suggest_layer)
+        
+        # ✅ อย่าลืม add layer ถ้าเปิดให้แสดง
+        if show_suggested_hubs:
+            suggest_layer.add_to(m_new)
+    
+        # Combined heatmap
+        if show_heatmap:
+            heatmap_layer = FeatureGroup(name="Customer Heatmap")
+            HeatMap(
+                cust_data[['Lat', 'Long']].values.tolist(),
+                radius=10,
+                gradient={0.2: '#FFE5B4', 0.6: '#FFA500', 1: '#FF8C00'}
+            ).add_to(heatmap_layer)
+            heatmap_layer.add_to(m_new)
 
-    # Suggested hubs with radius
-    for i, (lat, lon) in enumerate(dc_locations):
-        folium.Marker(
-            location=[lat, lon],
-            popup=f"Suggest Hub #{i+1}",
-            icon=folium.Icon(color='green', icon='star', prefix='fa')
-        ).add_to(m)
+    LayerControl().add_to(m_new)
 
-        folium.Circle(
-            location=[lat, lon],
-            radius=radius_m,
-            color='green',
-            fill=True,
-            fill_opacity=0.1,
-            popup=f"Radius {radius_km} km"
-        ).add_to(m)
-
-    # Show final map
-    st.subheader("🗺️ Visualization")
-    st_folium(m, width=1100, height=600, returned_objects=[], key="main_map")
+#------------------------------------------------------------------------------------------------------------------------
+            
+    st_folium(m_new, width=1100, height=600, key="new_hub_map", returned_objects=[], feature_group_to_add=None, center=[13.75, 100.5], zoom=6)
