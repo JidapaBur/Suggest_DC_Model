@@ -4,3 +4,5 @@ folium
 pandas
 scikit-learn
 geopy
+geopandas
+shapely
