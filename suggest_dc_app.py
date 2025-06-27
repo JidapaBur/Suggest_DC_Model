@@ -207,7 +207,7 @@ if not cluster_data.empty:
         for _, row in dc_data.iterrows():
             folium.Marker(
                 location=[row['Lat'], row['Long']],
-                popup=row['Hub_Name','Type'],
+                popup=f"Hub: {row['Hub_Name']}<br>Type: {row.get('Type', 'Unknown')}<br>Province: {row.get('Province', 'N/A')}",
                 icon=folium.Icon(color = 'red' if row.get('Type', '').lower() == 'makro' else 'blue', icon='store', prefix='fa')
             ).add_to(existing_layer)
         if show_existing_hubs:
