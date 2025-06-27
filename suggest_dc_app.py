@@ -128,7 +128,7 @@ if dc_file:
         
 # Suggest New Hubs for Out-of-Radius Customers
 st.subheader("Suggest New Hubs Based on Radius & Existing Hubs")
-radius_threshold_km = st.slider("Set Radius Threshold from Existing Hubs (km):", 10, 500, 100)
+radius_threshold_km = st.slider("Set Radius Threshold from Existing Hubs (km):", 30, 500, 100)
 
 # ------------------------------------------------------------------------------------------------------------------------
 
